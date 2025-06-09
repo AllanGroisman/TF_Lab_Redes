@@ -8,20 +8,31 @@ import ipaddress
 
 
 # Funções auxiliares para conversão de formato pra exportar corretamente e nao em bytes
-def format_mac(mac):
+def formatar_mac(mac):
     return ':'.join('%02x' % b for b in mac)
 
-def format_ip(ip):
+def formatar_ip(ip):
     if len(ip) == 4:
         return str(ipaddress.IPv4Address(ip))
     elif len(ip) == 16:
         return str(ipaddress.IPv6Address(ip))
  
-def format_port(porta):
-    return int.from_bytes(porta, 'big')
+def formatar_porta(porta_bytes):
+    porta = int.from_bytes(porta_bytes, 'big')
+    try:
+        #pega da biblioteca do linux quais sao os possiveis protocolos conhecidos, se nao retornar nada, é porta aleatoria
+        service = socket.getservbyport(porta)
+        return f"{porta} - {service.upper()}"
+    except OSError:
+        return f"{porta} - DESCONHECIDO"
 
 # Cria um socket raw
 s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
+
+#Tamanhos do pacote a partir de cada camada
+tam_pacote_enlace = 0
+tam_pacote_rede = 0
+tam_pacote_transporte = 0
 
 #Dados cabeçalho 2
 cabecalho_eth = ['Data','Mac_Origem','Mac_Destino','Protocolo','Tamanho_Quadro']
@@ -38,7 +49,7 @@ id_protocolo_transporte = 0
 tamanho_rede = 0
 
 #Dados Transporte cabeçalho 4
-cabecalho_transporte = ['Data','Protocolo','IP_Origem','Porta_Origem','IP_Destino','Porta_Destino','Tamanho_Pacote']
+cabecalho_transporte = ['Data','Protocolo','IP_Origem','Porta_Origem','IP_Destino','Porta_Destino','Tamanho_Pacote_Transporte']
 protocolo_transporte = ""
 porta_origem = ""
 porta_destino = ""
@@ -52,6 +63,7 @@ continuar_programa = True
 
 print("PROGRAMA INICIADO")
 
+#interface do usuario
 def interface():
     global continuar_programa
     global cont_IPv4, cont_IPv6, cont_ARP, cont_TCP, cont_UDP, cont_ICMP, cont_ICMPv6
@@ -81,6 +93,7 @@ def interface():
             print(f"ICMPv6   : {cont_ICMPv6}")
             print("===========================\n")
         elif opcao == "z":
+            cont_IPv4 = cont_IPv6 = cont_ARP = cont_TCP = cont_UDP = cont_ICMP = cont_ICMPv6 = 0
             print("\n===== RELATÓRIO REINICIADO =====")
             print(f"IPv4     : {cont_IPv4}")
             print(f"IPv6     : {cont_IPv6}")
@@ -90,9 +103,6 @@ def interface():
             print(f"ICMP     : {cont_ICMP}")
             print(f"ICMPv6   : {cont_ICMPv6}")
             print("===========================\n")
-
-            cont_IPv4 = cont_IPv6 = cont_ARP = cont_TCP = cont_UDP = cont_ICMP = cont_ICMPv6 = 0
-
 
 
 # Cria thread da interface do usuario
@@ -108,16 +118,24 @@ while continuar_programa:
     #Pega o tempo de chegada do pacote
     data = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
+
     ####################################### CAMADA ENLACE 14 primeiros bytes #######################################
     enlace = pacote[:14]
     mac_destino = enlace[:6]
     mac_origem = enlace[6:12]
     tipo_rede = int.from_bytes(enlace[12:14], 'big')
+    
+    #pego onde que é o inicio da proxima camada
     inicio_rede = tamanho_enlace  
+
+    #pega o tamanho do pacote
+    tam_pacote_enlace = len(pacote)
 
     ####################################### CAMADA DE REDE -> depende do tipo que vem da camada anterior #######################################
     #pega o protocolo de rede a partir do inicio de rede
     rede = pacote[inicio_rede:]
+    #pega o tamanho a partir de camada rede
+    tam_pacote_rede = len(rede)
 
     #Se for IPv4 (tem 20 bytes)
     if  tipo_rede == 0x0800:
@@ -166,6 +184,9 @@ while continuar_programa:
     
     ####################################### CAMADA DE TRANSPORTE -> depende do tipo que vem da camada de rede #######################################
     protocolo_transporte = pacote[inicio_transporte:]
+    #pega o tamanho a partir de transporte
+    tam_pacote_transporte = len(protocolo_transporte)
+    
     tipo_transporte = int.from_bytes(id_protocolo_transporte, 'big')
 
     # Inicializa padrão para não TCP/UDP/ICMP
@@ -242,10 +263,10 @@ while continuar_programa:
             writer.writeheader()
         writer.writerow({
             'Data': data,
-            'Mac_Origem': format_mac(mac_origem),
-            'Mac_Destino': format_mac(mac_destino),
-            'Protocolo': protocolo_rede,
-            'Tamanho_Quadro': tamanho_enlace
+            'Mac_Origem': formatar_mac(mac_origem),
+            'Mac_Destino': formatar_mac(mac_destino),
+            'Protocolo': hex(tipo_rede) + " - " + protocolo_rede,
+            'Tamanho_Quadro': tam_pacote_enlace
         })
 
     ####################################### CAMADA 3 #######################################
@@ -258,10 +279,10 @@ while continuar_programa:
         writer.writerow({
             'Data': data,
             'Protocolo': protocolo_rede,
-            'IP_Origem': format_ip(ip_origem),
-            'IP_Destino': format_ip(ip_destino),
+            'IP_Origem': formatar_ip(ip_origem),
+            'IP_Destino': formatar_ip(ip_destino),
             'ID_Protocolo': tipo_transporte,
-            'Tamanho_Pacote': tamanho_rede 
+            'Tamanho_Pacote': tam_pacote_rede 
         })
 
 
@@ -275,13 +296,14 @@ while continuar_programa:
         writer.writerow({
             'Data': data,
             'Protocolo': nome_transporte,
-            'IP_Origem': format_ip(ip_origem),
-            'Porta_Origem': format_port(porta_origem),
-            'IP_Destino': format_ip(ip_destino),
-            'Porta_Destino': format_port(porta_destino),
-            'Tamanho_Pacote': tamanho_transporte 
+            'IP_Origem': formatar_ip(ip_origem),
+            'Porta_Origem': formatar_porta(porta_origem),
+            'IP_Destino': formatar_ip(ip_destino),
+            'Porta_Destino': formatar_porta(porta_destino),
+            'Tamanho_Pacote_Transporte': tam_pacote_transporte 
         })
 
+#no final, pergunta se quer excluir ou nao os resultados gerados
 excluir = input("Deseja excluir os arquivos CSV gerados? (s/n): ").lower()
 
 if excluir == "s":
